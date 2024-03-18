@@ -53,21 +53,55 @@ app.get("/register", (req, res) => {
   res.render("register.ejs");
 });
 
-app.get("/secrets", (req, res) => {
-  console.log(req.user);
+app.get("/secrets", async (req, res) => {
   if (req.isAuthenticated()) {
-    res.render("secrets.ejs");
+    try {
+      const result = await db.query("SELECT * FROM users WHERE email = $1",[
+        req.user.email
+      ]);
+
+      console.log(result.rows[0].secret);
+      const secret = result.rows[0].secret;
+      if(secret){
+        res.render("secrets.ejs",{secret:secret});
+      }else{
+        res.render("secrets.ejs",{secret:"No secrets found or share you"})
+      }
+    } catch (error) {
+      console.log(error);
+    }
   } else {
-    res.redirect("/")
+    res.redirect("/login")
   }
 });
 
 app.get("/logout", (req, res) => {
   req.logout((err) => {
-    if (err) console.log(err);
+    if (err) {
+      return next(err);
+    }
     res.redirect("/");
   })
-})
+});
+
+app.get("/auth/google", passport.authenticate("google", {
+  scope: ["email", "profile"]
+}));
+
+app.get("/auth/google/secrets", passport.authenticate("google", {
+  successRedirect: "/secrets",
+  failureRedirect: "/login"
+}));
+
+app.get("/submit", (req, res) => {
+  if (req.isAuthenticated()) {
+    res.render("submit.ejs");
+  } else {
+    res.redirect("/login");
+  }
+
+});
+
 
 app.post("/register", async (req, res) => {
 
@@ -108,40 +142,83 @@ app.post("/register", async (req, res) => {
 app.post("/login", passport.authenticate("local", {
   successRedirect: "/secrets",
   failureRedirect: "/login",
+
 }));
 
-// 
+app.post("/submit", async (req, res) => {
+  const submittedSecret = req.body.secret;
 
-passport.use(new Strategy(async function verify(username, password, cb) {
-  console.log(username);
   try {
-    const result = await db.query("SELECT * FROM users WHERE email = $1", [username]);
+    await db.query("UPDATE users SET secret = $1 WHERE email = $2",
+      [submittedSecret, req.user.email]);
+    res.redirect("/secrets");
 
-    if (result.rows.length > 0) {
-
-      const user = result.rows[0];
-      const storedHashPassword = user.password;
-
-      bcrypt.compare(password, storedHashPassword, (err, result) => {
-        if (err) {
-          return cb(err);
-        } else {
-          if (result) {
-            return cb(null, user);
-          } else {
-            return cb(null, false);
-          }
-        }
-      })
-
-    } else {
-      return cb("User not found");
-    }
-  }
-  catch (error) {
+  } catch (error) {
     console.log(error);
   }
-}));
+})
+
+
+
+passport.use("local",
+  new Strategy(async function verify(username, password, cb) {
+    console.log(username);
+    try {
+      const result = await db.query("SELECT * FROM users WHERE email = $1", [username]);
+
+      if (result.rows.length > 0) {
+
+        const user = result.rows[0];
+        const storedHashPassword = user.password;
+
+        bcrypt.compare(password, storedHashPassword, (err, result) => {
+          if (err) {
+            return cb(err);
+          } else {
+            if (result) {
+              return cb(null, user);
+            } else {
+              return cb(null, false, { message: "Incorrect Password" });
+            }
+          }
+        })
+
+      } else {
+        return cb("User not found");
+      }
+    }
+    catch (error) {
+      console.log(error);
+    }
+  }));
+
+passport.use("google",
+  new GoogleStrategy(
+    {
+      clientID: process.env.GOOGLE_CLIENT_ID,
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+      callbackURL: process.env.GOOGLE_CALLBACK_URL,
+      userProfileURL: process.env.GOOGLE_USER_PROFILE_URL,
+    },
+    async (accesToken, refreshToken, profile, cb) => {
+      try {
+        const result = await db.query("SELECT * FROM users WHERE email = $1", [profile.email]);
+
+        console.log(result.rows.length);
+        if (result.rows.length === 0) {
+          const newUser = await db.query("INSERT INTO users(email,password) VALUES ($1,$2) RETURNING *", [
+            profile.email, "google"
+          ]);
+          return cb(null, newUser.rows[0]);
+        } else {
+          //Already have existing user
+          return cb(null, result.rows[0])
+        }
+      } catch (error) {
+        return cb(error)
+      }
+    }
+  ))
 
 passport.serializeUser((user, cb) => {
   cb(null, user);
